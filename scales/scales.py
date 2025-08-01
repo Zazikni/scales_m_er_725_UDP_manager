@@ -1,3 +1,6 @@
+import hashlib
+import json
+import sys
 import socket
 import time
 from typing import Optional
@@ -67,7 +70,9 @@ class Scales:
         except socket.timeout:
             return None
 
-    def __recv(self, timeout: float = 5) -> Optional[tuple[bytes, tuple]]:
+    def __recv(
+        self, timeout: float = 5, force_exit_if_timeout: bool = False
+    ) -> Optional[tuple[bytes, tuple]]:
         self.__socket.settimeout(timeout)
         try:
             data, addr = self.__socket.recvfrom(2048)
@@ -76,14 +81,18 @@ class Scales:
             )
             return data, addr
         except socket.timeout:
-            return None
+            logging.warning("Не удалось получить ответ от весов за отведенное время.")
+            if force_exit_if_timeout:
+                sys.exit(1)
+            else:
+                return None
 
     def get_products_json(self) -> dict:
         self.__send(
             self.__file_creation_request_gen(),
             "Пакет с запросом на создание файла",
         )
-        self.__recv()
+        self.__recv(force_exit_if_timeout=True)
 
         while True:
             self.__send(
@@ -91,8 +100,8 @@ class Scales:
                 "Пакет с запросом на получение статуса создания файла",
             )
             time.sleep(1)
-            data_from_scales = self.__recv()
-            if data_from_scales[0][4] == 172:
+            data_from_scales, address = self.__recv()
+            if data_from_scales[4] == 172:
                 continue
             else:
                 # print("Data is ready to collect")
@@ -122,6 +131,34 @@ class Scales:
             if is_last_chunk:
                 break
         return get_json_from_bytearray(file_data)
+
+    def __initial_file_transfer_request_gen(
+        self, data: bytes, clear_database: bool = False
+    ) -> bytes:
+        command = bytes([0xFF, 0x13])
+        hash_sending_param = bytes([0x02])
+        md5_hash = hashlib.md5(data).digest()
+        file_size_param = bytes([0x04])
+        file_export_type_param = bytes([0x01])
+        file_export_type = bytes([0x00]) if clear_database else bytes([0x01])
+        payload = (
+            command
+            + self.__password.encode("ASCII")
+            + hash_sending_param
+            + md5_hash
+            + file_size_param
+            + bytes([len(data)])
+            + file_export_type_param
+            + file_export_type
+        )
+        return self.__STX + bytes([len(payload)]) + payload
+
+    def send_json_products(self, data: dict) -> None:
+        json_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        print(
+            self.__initial_file_transfer_request_gen(json_bytes, clear_database=False)
+        )
+        pass
 
     def get_all_commands(self) -> dict:
         res = dict()
