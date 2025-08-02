@@ -3,7 +3,7 @@ import json
 import sys
 import socket
 import time
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 import logging
 from .utilities import get_json_from_bytearray
 
@@ -210,15 +210,18 @@ class Scales:
     def __packet_header_gen(self, payload: bytes):
         if len(payload) <= 255:
             header = self.__STX + bytes([len(payload)])
+            return header
         else:
             header = self.__STX + bytes([0xFF])
             return header
 
     def send_json_products(self, data: dict) -> None:
-        json_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        json_bytes = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
         response: bytes
         self.__send(
-            self.__initial_file_transfer_request_gen(json_bytes, clear_database=False),
+            self.__initial_file_transfer_request_gen(json_bytes, clear_database=True),
             "Пакет, содержащий хэш-данные файла и параметры",
         )
         response, _ = self.__recv(force_exit_if_timeout=True)
@@ -250,11 +253,24 @@ class Scales:
                 logging.error(f"Файл обработан с ошибкой.  Загрузка не удалась.")
                 sys.exit(1)
 
-    def get_all_commands(self) -> dict:
+    def get_all_json_receive_commands(self) -> dict:
         res = dict()
         res["1"] = self.__file_creation_request_gen()
         res["2"] = self.__file_creation_status_request_gen()
         res["3"] = self.__hash_calculating_request_gen()
         res["4"] = self.__hash_calculating_status_request_gen()
         res["5"] = self.__file_transfer_init_request_gen()
+        return res
+
+    def get_all_json_transfer_commands(self, json_bytes) -> dict:
+        res = dict()
+        res["1"] = self.__initial_file_transfer_request_gen(
+            data=json_bytes, clear_database=True
+        )
+        res["2"] = self.__initial_file_transfer_request_gen(
+            data=json_bytes, clear_database=False
+        )
+        res["3"] = self.__file_transfer_commands_gen(json_bytes)
+        res["4"] = self.__transfered_file_check_command_gen()
+
         return res

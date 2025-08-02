@@ -21,9 +21,6 @@ def get_json_from_bytearray(data: bytes) -> dict | None:
         else:
             print("Получен неизвестный тип JSON:", type(parsed))
             return None
-
-        # print("JSON-словарь получен:")
-        # print(json.dumps(result, indent=2, ensure_ascii=False))
         return result
 
     except Exception as e:
