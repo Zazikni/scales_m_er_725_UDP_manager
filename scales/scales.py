@@ -3,7 +3,7 @@ import json
 import sys
 import socket
 import time
-from typing import Optional
+from typing import Optional, Tuple, List
 import logging
 from .utilities import get_json_from_bytearray
 
@@ -16,6 +16,7 @@ class Scales:
         self.__password: str = password
         self.__STX = bytes([0x02])
         self.__get_socket()
+        self.__file_chunk_limit = 60000
 
     def __del__(self):
         self.__socket.close()
@@ -57,6 +58,10 @@ class Scales:
 
     def __send(self, data: bytes, label: str):
         logging.debug(f"[>] {label} | {len(data)} байт | HEX: {data.hex()} | {data}")
+        self.__socket.sendto(data, (self.ip, self.port))
+
+    def __send_big_data(self, data: bytes, label: str):
+        logging.debug(f"[>] {label} | {len(data)} байт | {list(data[:13])}")
         self.__socket.sendto(data, (self.ip, self.port))
 
     def __recv_big_data(self, timeout: float = 20) -> Optional[tuple[bytes, tuple]]:
@@ -147,18 +152,103 @@ class Scales:
             + hash_sending_param
             + md5_hash
             + file_size_param
-            + bytes([len(data)])
+            + len(data).to_bytes(8, byteorder="big")
             + file_export_type_param
             + file_export_type
         )
+
         return self.__STX + bytes([len(payload)]) + payload
+
+    def __file_transfer_commands_gen(
+        self,
+        data: bytes,
+    ) -> Tuple[bytes, ...]:
+        command = bytes([0xFF, 0x13])
+        chunk_sending_param = bytes([0x03])
+        offset_param = 0
+        total_len = len(data)
+        packets = []
+
+        while offset_param < total_len:
+            # текущая порция данных
+            chunk = data[offset_param : offset_param + self.__file_chunk_limit]
+            is_last = offset_param + self.__file_chunk_limit >= total_len
+
+            is_last_byte = bytes([0x01]) if is_last else bytes([0x00])
+            offset_bytes = offset_param.to_bytes(4, "little")
+            chunk_len_bytes = len(chunk).to_bytes(2, "little")
+
+            payload = (
+                command
+                + self.__password.encode("ascii")
+                + chunk_sending_param
+                + is_last_byte
+                + offset_bytes
+                + chunk_len_bytes
+                + chunk
+            )
+
+            # заголовок в зависимости от длины
+            if len(payload) <= 255:
+                header = self.__STX + bytes([len(payload)])
+            else:
+                header = self.__STX + bytes([0xFF])
+
+            packet = header + payload
+            packets.append(packet)
+
+            offset_param += self.__file_chunk_limit
+
+        return tuple(packets)
+
+    def __transfered_file_check_command_gen(self):
+        command = bytes([0xFF, 0x13])
+        file_check_code = 0x09
+        payload = command + self.__password.encode("ASCII") + bytes([file_check_code])
+        return self.__STX + bytes([len(payload)]) + payload
+
+    def __packet_header_gen(self, payload: bytes):
+        if len(payload) <= 255:
+            header = self.__STX + bytes([len(payload)])
+        else:
+            header = self.__STX + bytes([0xFF])
+            return header
 
     def send_json_products(self, data: dict) -> None:
         json_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        print(
-            self.__initial_file_transfer_request_gen(json_bytes, clear_database=False)
+        response: bytes
+        self.__send(
+            self.__initial_file_transfer_request_gen(json_bytes, clear_database=False),
+            "Пакет, содержащий хэш-данные файла и параметры",
         )
-        pass
+        response, _ = self.__recv(force_exit_if_timeout=True)
+        if response != b"\x02\x03\xff\x13\x00":
+            logging.error(f"Не удалось инициализировать передачу JSON файла на весы.")
+            sys.exit(1)
+        packets = self.__file_transfer_commands_gen(json_bytes)
+        for packet in packets:
+            self.__send_big_data(packet, "Пакет, содержащий порцию файла")
+            response, _ = self.__recv()
+            if response == b"\x02\x03\xff\x13\x00":
+                continue
+            else:
+                logging.error(f"Не удалось загрузить порцию файла.")
+                sys.exit(1)
+        while True:
+            self.__send(
+                self.__transfered_file_check_command_gen(),
+                "Пакет с запросом на проверку отправляемого файла",
+            )
+
+            response, _ = self.__recv()
+            if response == b"\x02\x06\xff\x13\x00\x01\x00\x00":
+                time.sleep(1)
+                continue
+            elif response == b"\x02\x06\xff\x13\x00\x00\x00\x00":
+                break
+            elif response == b"\x02\x06\xff\x13\x00\x02\x00\x00":
+                logging.error(f"Файл обработан с ошибкой.  Загрузка не удалась.")
+                sys.exit(1)
 
     def get_all_commands(self) -> dict:
         res = dict()
