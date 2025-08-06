@@ -14,7 +14,6 @@ class Scales:
         self.ip: str = ip
         self.port: int = port
         self.__password: bytes = password.encode("ASCII")
-        self.__STX = bytes([0x02])
         self.__get_socket()
         self.__file_chunk_limit = 60000
 
@@ -29,31 +28,40 @@ class Scales:
             raise e
 
     def __file_creation_request_gen(self) -> bytes:
-        command = bytes([0xFF, 0x14])
-        payload = command + self.__password
+        payload = (
+            Scales.Codes.JsonFileReceiving.FILE_CREATION_COMMAND_CODE + self.__password
+        )
         return self.__packet_header_gen(payload) + payload
 
     def __file_creation_status_request_gen(self) -> bytes:
-        command = bytes([0xFF, 0x15])
-        payload = command + self.__password
+        payload = (
+            Scales.Codes.JsonFileReceiving.FILE_CREATION_STATUS_COMMAND_CODE
+            + self.__password
+        )
         return self.__packet_header_gen(payload) + payload
 
     def __hash_calculating_request_gen(self) -> bytes:
-        command = bytes([0xFF, 0x12])
-        hash_calculating_request_code = bytes([0x06])
-        payload = command + self.__password + hash_calculating_request_code
+        payload = (
+            Scales.Codes.JsonFileReceiving.HASH_CALCULATING_COMMAND_CODE
+            + self.__password
+            + Scales.Codes.JsonFileReceiving.HASH_CALCULATING_STAGE_CODE
+        )
         return self.__packet_header_gen(payload) + payload
 
     def __hash_calculating_status_request_gen(self) -> bytes:
-        command = bytes([0xFF, 0x12])
-        hash_calculating_status_code = bytes([0x07])
-        payload = command + self.__password + hash_calculating_status_code
+        payload = (
+            Scales.Codes.JsonFileReceiving.HASH_CALCULATING_COMMAND_CODE
+            + self.__password
+            + Scales.Codes.JsonFileReceiving.HASH_CALCULATING_STATUS_STAGE_CODE
+        )
         return self.__packet_header_gen(payload) + payload
 
     def __file_transfer_init_request_gen(self) -> bytes:
-        command = bytes([0xFF, 0x12])
-        file_transfer_initiation_code = bytes([0x03])
-        payload = command + self.__password + file_transfer_initiation_code
+        payload = (
+            Scales.Codes.JsonFileReceiving.HASH_CALCULATING_COMMAND_CODE
+            + self.__password
+            + Scales.Codes.JsonFileReceiving.FILE_RECEIVING_INITIATION_STAGE_CODE
+        )
         return self.__packet_header_gen(payload) + payload
 
     def __send(self, data: bytes, label: str):
@@ -142,21 +150,20 @@ class Scales:
     def __initial_file_transfer_request_gen(
         self, data: bytes, clear_database: bool = False
     ) -> bytes:
-        command = bytes([0xFF, 0x13])
-        hash_sending_code = bytes([0x02])
         md5_hash = hashlib.md5(data).digest()
-        file_size_code = bytes([0x04])
-        products_export_code = bytes([0x01])
-        file_export_method_code = bytes([0x00]) if clear_database else bytes([0x01])
         payload = (
-            command
+            Scales.Codes.JsonFileTransfer.FILE_TRANSFER_COMMAND_CODE
             + self.__password
-            + hash_sending_code
+            + Scales.Codes.JsonFileTransfer.HASH_TRANSFER_CODE
             + md5_hash
-            + file_size_code
+            + Scales.Codes.JsonFileTransfer.FILE_SIZE_CODE
             + len(data).to_bytes(8, byteorder="big")
-            + products_export_code
-            + file_export_method_code
+            + Scales.Codes.JsonFileTransfer.PRODUCTS_EXPORT_CODE
+            + (
+                Scales.Codes.JsonFileTransfer.CLEAR_DATABASE_TRUE_CODE
+                if clear_database
+                else Scales.Codes.JsonFileTransfer.CLEAR_DATABASE_FALSE_CODE
+            )
         )
 
         return self.__packet_header_gen(payload) + payload
@@ -211,9 +218,9 @@ class Scales:
 
     def __packet_header_gen(self, payload: bytes):
         if len(payload) <= 255:
-            return self.__STX + bytes([len(payload)])
+            return Scales.Codes.Global.STX + bytes([len(payload)])
         else:
-            return self.__STX + bytes([0xFF])
+            return Scales.Codes.Global.STX + bytes([0xFF])
 
     def send_json_products(self, data: dict) -> None:
         """
@@ -259,20 +266,6 @@ class Scales:
                 logging.error(f"Файл обработан с ошибкой.  Загрузка не удалась.")
                 sys.exit(1)
 
-    def get_all_json_receive_commands(self) -> dict:
-        """
-        Метод для тестирования. Генерирует команды для запроса данных JSON с весов.
-
-        :return: словарь с сгенерированными командами для получения байтовых данных JSON.
-        """
-        res = dict()
-        res["1"] = self.__file_creation_request_gen()
-        res["2"] = self.__file_creation_status_request_gen()
-        res["3"] = self.__hash_calculating_request_gen()
-        res["4"] = self.__hash_calculating_status_request_gen()
-        res["5"] = self.__file_transfer_init_request_gen()
-        return res
-
     def get_all_json_transfer_commands(self, json_bytes) -> dict:
         """
         Метод для тестирования. Генерирует команды для отправки данных JSON на весы.
@@ -290,3 +283,30 @@ class Scales:
         res["4"] = self.__transfered_file_check_command_gen()
 
         return res
+
+    class Codes:
+        """
+        Cодержит все коды взаимодействия с весами.
+        """
+
+        class Global:
+            STX = bytes([0x02])  # StartOfText
+
+        class ResponseCodes:
+            SUCCESS = bytes([0x00])
+
+        class JsonFileReceiving:
+            FILE_CREATION_COMMAND_CODE = bytes([0xFF, 0x14])
+            FILE_CREATION_STATUS_COMMAND_CODE = bytes([0xFF, 0x15])
+            HASH_CALCULATING_COMMAND_CODE = bytes([0xFF, 0x12])
+            HASH_CALCULATING_STAGE_CODE = bytes([0x06])
+            HASH_CALCULATING_STATUS_STAGE_CODE = bytes([0x07])
+            FILE_RECEIVING_INITIATION_STAGE_CODE = bytes([0x03])
+
+        class JsonFileTransfer:
+            FILE_TRANSFER_COMMAND_CODE = bytes([0xFF, 0x13])
+            HASH_TRANSFER_CODE = bytes([0x02])
+            FILE_SIZE_CODE = bytes([0x04])
+            PRODUCTS_EXPORT_CODE = bytes([0x01])
+            CLEAR_DATABASE_TRUE_CODE = bytes([0x00])
+            CLEAR_DATABASE_FALSE_CODE = bytes([0x01])
