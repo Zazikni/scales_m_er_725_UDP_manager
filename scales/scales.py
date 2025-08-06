@@ -9,11 +9,11 @@ from .utilities import get_json_from_bytearray
 
 
 class Scales:
-    def __init__(self, ip, port, password):
+    def __init__(self, ip: str, port: int, password: str):
 
         self.ip: str = ip
         self.port: int = port
-        self.__password: str = password
+        self.__password: bytes = password.encode("ASCII")
         self.__STX = bytes([0x02])
         self.__get_socket()
         self.__file_chunk_limit = 60000
@@ -30,31 +30,31 @@ class Scales:
 
     def __file_creation_request_gen(self) -> bytes:
         command = bytes([0xFF, 0x14])
-        payload = command + self.__password.encode("ASCII")
-        return self.__STX + bytes([len(payload)]) + payload
+        payload = command + self.__password
+        return self.__packet_header_gen(payload) + payload
 
     def __file_creation_status_request_gen(self) -> bytes:
         command = bytes([0xFF, 0x15])
-        payload = command + self.__password.encode("ASCII")
-        return self.__STX + bytes([len(payload)]) + payload
+        payload = command + self.__password
+        return self.__packet_header_gen(payload) + payload
 
     def __hash_calculating_request_gen(self) -> bytes:
         command = bytes([0xFF, 0x12])
-        hash_calc_code = 0x06
-        payload = command + self.__password.encode("ASCII") + bytes([hash_calc_code])
-        return self.__STX + bytes([len(payload)]) + payload
+        hash_calculating_request_code = bytes([0x06])
+        payload = command + self.__password + hash_calculating_request_code
+        return self.__packet_header_gen(payload) + payload
 
     def __hash_calculating_status_request_gen(self) -> bytes:
         command = bytes([0xFF, 0x12])
-        hash_calc_code = 0x07
-        payload = command + self.__password.encode("ASCII") + bytes([hash_calc_code])
-        return self.__STX + bytes([len(payload)]) + payload
+        hash_calculating_status_code = bytes([0x07])
+        payload = command + self.__password + hash_calculating_status_code
+        return self.__packet_header_gen(payload) + payload
 
     def __file_transfer_init_request_gen(self) -> bytes:
         command = bytes([0xFF, 0x12])
-        hash_calc_code = 0x03
-        payload = command + self.__password.encode("ASCII") + bytes([hash_calc_code])
-        return self.__STX + bytes([len(payload)]) + payload
+        file_transfer_initiation_code = bytes([0x03])
+        payload = command + self.__password + file_transfer_initiation_code
+        return self.__packet_header_gen(payload) + payload
 
     def __send(self, data: bytes, label: str):
         logging.debug(f"[>] {label} | {len(data)} байт | HEX: {data.hex()} | {data}")
@@ -93,6 +93,11 @@ class Scales:
                 return None
 
     def get_products_json(self) -> dict:
+        """
+        Запрашивает данные с весов.
+
+        :return: словарь с информацией о товарах на весах.
+        """
         self.__send(
             self.__file_creation_request_gen(),
             "Пакет с запросом на создание файла",
@@ -109,15 +114,12 @@ class Scales:
             if data_from_scales[4] == 172:
                 continue
             else:
-                # print("Data is ready to collect")
                 break
         self.__send(
             self.__hash_calculating_request_gen(),
             "Пакет с запросом на начало расчёта хэш-данных",
         )
         self.__recv()
-        # Если код статуса расчёта = 0
-        # TODO Сделать обработку случая когда статус рассчета != 0
         self.__send(
             self.__hash_calculating_status_request_gen(),
             "Пакет с запросом на получение статуса расчёта хэш-данных",
@@ -141,30 +143,30 @@ class Scales:
         self, data: bytes, clear_database: bool = False
     ) -> bytes:
         command = bytes([0xFF, 0x13])
-        hash_sending_param = bytes([0x02])
+        hash_sending_code = bytes([0x02])
         md5_hash = hashlib.md5(data).digest()
-        file_size_param = bytes([0x04])
-        file_export_type_param = bytes([0x01])
-        file_export_type = bytes([0x00]) if clear_database else bytes([0x01])
+        file_size_code = bytes([0x04])
+        products_export_code = bytes([0x01])
+        file_export_method_code = bytes([0x00]) if clear_database else bytes([0x01])
         payload = (
             command
-            + self.__password.encode("ASCII")
-            + hash_sending_param
+            + self.__password
+            + hash_sending_code
             + md5_hash
-            + file_size_param
+            + file_size_code
             + len(data).to_bytes(8, byteorder="big")
-            + file_export_type_param
-            + file_export_type
+            + products_export_code
+            + file_export_method_code
         )
 
-        return self.__STX + bytes([len(payload)]) + payload
+        return self.__packet_header_gen(payload) + payload
 
     def __file_transfer_commands_gen(
         self,
         data: bytes,
     ) -> Tuple[bytes, ...]:
         command = bytes([0xFF, 0x13])
-        chunk_sending_param = bytes([0x03])
+        chunk_sending_code = bytes([0x03])
         offset_param = 0
         total_len = len(data)
         packets = []
@@ -180,8 +182,8 @@ class Scales:
 
             payload = (
                 command
-                + self.__password.encode("ascii")
-                + chunk_sending_param
+                + self.__password
+                + chunk_sending_code
                 + is_last_byte
                 + offset_bytes
                 + chunk_len_bytes
@@ -203,19 +205,23 @@ class Scales:
 
     def __transfered_file_check_command_gen(self):
         command = bytes([0xFF, 0x13])
-        file_check_code = 0x09
-        payload = command + self.__password.encode("ASCII") + bytes([file_check_code])
-        return self.__STX + bytes([len(payload)]) + payload
+        file_check_code = bytes([0x09])
+        payload = command + self.__password + file_check_code
+        return self.__packet_header_gen(payload) + payload
 
     def __packet_header_gen(self, payload: bytes):
         if len(payload) <= 255:
-            header = self.__STX + bytes([len(payload)])
-            return header
+            return self.__STX + bytes([len(payload)])
         else:
-            header = self.__STX + bytes([0xFF])
-            return header
+            return self.__STX + bytes([0xFF])
 
     def send_json_products(self, data: dict) -> None:
+        """
+        Отправляет байтовые данные содержащие JSON с товарами на весы.
+
+        :param data: байтовые данные, содержащие JSON.
+        :return: None
+        """
         json_bytes = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
@@ -254,6 +260,11 @@ class Scales:
                 sys.exit(1)
 
     def get_all_json_receive_commands(self) -> dict:
+        """
+        Метод для тестирования. Генерирует команды для запроса данных JSON с весов.
+
+        :return: словарь с сгенерированными командами для получения байтовых данных JSON.
+        """
         res = dict()
         res["1"] = self.__file_creation_request_gen()
         res["2"] = self.__file_creation_status_request_gen()
@@ -263,6 +274,11 @@ class Scales:
         return res
 
     def get_all_json_transfer_commands(self, json_bytes) -> dict:
+        """
+        Метод для тестирования. Генерирует команды для отправки данных JSON на весы.
+
+        :return: словарь с сгенерированными командами для отправки байтовых данных JSON.
+        """
         res = dict()
         res["1"] = self.__initial_file_transfer_request_gen(
             data=json_bytes, clear_database=True
